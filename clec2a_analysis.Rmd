@@ -1,0 +1,165 @@
+---
+title: "clec2a in kmt2a"
+author: "Kobe Ikegami"
+date: "2025-06-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#load in necessary packages
+```{r}
+suppressPackageStartupMessages({
+  library(SingleCellExperiment)
+  library(Seurat)
+  library(tidyverse)
+  library(Matrix)
+  library(scales)
+  library(cowplot)
+  library(RCurl)
+  library(scCustomize)
+  library(scrubletR)
+  library(presto)
+  library(dplyr)
+  library(readxl)
+  library(mclust)
+  library(ggpubr)
+  library(scater)
+  library(patchwork)
+  library(viewmastR)
+  library(enrichplot)
+  library(clusterProfiler)
+  library(org.Hs.eg.db)
+  library(qs2)
+})
+```
+
+#set variables for root dir, data, objects, and figures
+```{r}
+ROOT_DIR<-"/home/kikegami/meshinchi"
+DATA_DIR <- file.path(ROOT_DIR, "data")
+CDS_DIR <- file.path(ROOT_DIR, "cds")
+FIG_DIR <- file.path(ROOT_DIR,  "figs/bcca")
+RES_DIR <- file.path(ROOT_DIR,  "res")
+```
+#read in data object
+```{r}
+sander <- qs_read(file.path(CDS_DIR, "sander.qs2"))
+kmt2a <- qs_read(file.path(CDS_DIR, "sander_kmt2a.qs2"))
+heqlthy <- qs_read(file.path(CDS_DIR, "sander_kmt2a_healthy.qs2"))
+tumor <- qs_read(file.path(CDS_DIR, "sander_kmt2a_tumor.qs2"))
+```
+
+#INspect UMAP space by fusion, patient, clec2a expression, and timepoint
+```{r}
+DimPlot(sander)
+#ggsave(file.path(FIG_DIR, "idents_umap.png"), plot = last_plot(), width = 8, height = 6, device = "png")
+FeaturePlot_scCustom(sander, features = c("CLEC2A"),reduction = "umap")
+#ggsave(file.path(FIG_DIR, "all_clec2a_feat.png"), plot = last_plot(), width = 8, height = 6, device = "png")
+DimPlot(sander, group.by = 'Timepoint')
+#ggsave(file.path(FIG_DIR, "timepoint_umap.png"), plot = last_plot(), width = 8, height = 6, device = "png")
+DimPlot(sander, group.by = 'Primary.Fusion')
+#ggsave(file.path(FIG_DIR, "primary_fusion_umap.png"), plot = last_plot(), width = 8, height = 6, device = "png")
+DimPlot(sander, group.by = 'fusion2')
+#ggsave(file.path(FIG_DIR, "secondary_fusion_umap.png"), plot = last_plot(), width = 8, height = 6, device = "png")
+DimPlot(sander, group.by = 'new.ident')
+DimPlot(sander, group.by = 'USI')
+```
+
+#subset out Fusion classes containing KMT2A, focus analysis on these
+```{r}
+kmt2a <- subset(sander, grepl("KMT2A", Primary.Fusion))
+kmt2a$Timepoint <- factor(kmt2a$Timepoint, levels = c("Diagnostic", "Remission", "Relapse"))
+#check values
+unique(kmt2a$Primary.Fusion)
+#save object
+qs_save(kmt2a, file.path(CDS_DIR, "sander_kmt2a.qs2"))
+```
+
+#same visual analysis as above but in KMT2A primary fusion samples only
+```{r}
+DimPlot(kmt2a)
+#ggsave(file.path(FIG_DIR, "kmt2a_idents_umap.png"), plot = last_plot(), width = 8, height = 6, device = "png")
+FeaturePlot_scCustom(kmt2a, features = c("CLEC2A"),reduction = "umap")
+#ggsave(file.path(FIG_DIR, "kmt2a_all_clec2a_feat.png"), plot = last_plot(), width = 8, height = 6, device = "png")
+DimPlot(kmt2a, group.by = 'Timepoint')
+#ggsave(file.path(FIG_DIR, "kmt2a_timepoint_umap.png"), plot = last_plot(), width = 8, height = 6, device = "png")
+DimPlot(kmt2a, group.by = 'Primary.Fusion')
+#ggsave(file.path(FIG_DIR, "kmt2a_primary_fusion_umap.png"), plot = last_plot(), width = 8, height = 6, device = "png")
+DimPlot(kmt2a, group.by = 'fusion2')
+#ggsave(file.path(FIG_DIR, "kmt2a_secondary_fusion_umap.png"), plot = last_plot(), width = 8, height = 6, device = "png")
+```
+
+#read in healthy bone marrow cell atlas for viewmastr cell type annotation
+```{r}
+REF_DIR <- "/fh/fast/furlan_s/grp/data/ddata/BM_data"
+seur <- readRDS(file.path(REF_DIR, "230329_rnaAugmented_seurat.RDS"))
+# Calculate and plot gene dispersion in query dataset
+seur <- calculate_gene_dispersion(seur)
+kmt2a <- calculate_gene_dispersion(kmt2a)
+vg <- intersect(get_selected_genes(select_genes(kmt2a, top_n = 10000, logmean_ul = -1, logmean_ll = -8)), get_selected_genes(select_genes(seur, top_n = 10000, logmean_ul = -1, logmean_ll = -8)))
+kmt2a <- viewmastR(kmt2a, seur, ref_celldata_col = "SFClassification", selected_genes = vg, max_epochs = 4)
+#plot viewmastr predictions and save to file
+DimPlot(kmt2a, group.by = "viewmastR_pred", cols = seur@misc$colors)
+ggsave(file.path(FIG_DIR, "furlan_viewmastr_pred.png"), plot = last_plot(), width = 8, height = 6, device = "png")
+colnames(kmt2a@meta.data)[colnames(kmt2a@meta.data) == "viewmastR_pred"] <- "furlan_vm_pred"
+```
+
+#violin plots to visualize CLEC2A expression by cell type, timepoint, and primary fusion
+```{r}
+kmt2a$Timepoint <- factor(kmt2a$Timepoint, levels = c("Diagnostic", "Remission", "Relapse"))
+VlnPlot(kmt2a, features = "CLEC2A", group.by = "furlan_vm_pred")
+#ggsave(file.path(FIG_DIR, "vln_kmt2a_clec2a_by_vm_class.png"), plot = last_plot(), width = 8, height = 6, device = "png")
+VlnPlot(kmt2a, features = "CLEC2A")
+#ggsave(file.path(FIG_DIR, "vln_kmt2a_clec2a_by_cluster.png"), plot = last_plot(), width = 8, height = 6, device = "png")
+VlnPlot(kmt2a, features = "CLEC2A", group.by = 'Timepoint')
+#ggsave(file.path(FIG_DIR, "vln_kmt2a_clec2a_by_timepoint.png"), plot = last_plot(), width = 8, height = 6, device = "png")
+VlnPlot(kmt2a, features = "CLEC2A", group.by = 'Primary.Fusion')
+#ggsave(file.path(FIG_DIR, "vln_kmt2a_clec2a_by_fusion_subtype.png"), plot = last_plot(), width = 8, height = 6, device = "png")
+```
+
+#subset kmt2a cells into healthy and tumor cells
+```{r}
+kmt2a$idents <- Idents(kmt2a)
+healthy <- subset(kmt2a, idents == 'healthy')
+tumor <- subset(kmt2a, idents != 'healthy')
+#check subsetting worked
+unique(Idents(healthy))
+unique(Idents(tumor))
+#recluster subsets, generate UMAPs
+healthy <- FindNeighbors(healthy, dims = 1:40) %>% FindClusters(resolution = 1.5) %>% RunUMAP(dims = 1:40)
+tumor <- FindNeighbors(tumor, dims = 1:40) %>% FindClusters(resolution = 1.5) %>% RunUMAP(dims = 1:40)
+```
+
+#Generate manuscript figures with uniform axis
+```{r}
+p <- DimPlot(healthy, group.by = 'furlan_vm_pred', cols = seur@misc$colors)
+p + scale_x_continuous(breaks = seq(-15, 15, by = 5),limits = c(-15, 15)) +
+  scale_y_continuous(breaks = seq(-15, 15, by = 5),limits = c(-15, 15))
+ggsave(file.path(FIG_DIR, "umap_healthy_kmt2a_clec2a_by_celltype.png"), plot = last_plot(), width = 10, height = 8, device = "png")
+q <- FeaturePlot_scCustom(healthy, features = "CLEC2A")
+q + scale_x_continuous(breaks = seq(-15, 15, by = 5),limits = c(-15, 15)) +
+  scale_y_continuous(breaks = seq(-15, 15, by = 5),limits = c(-15, 15))
+ggsave(file.path(FIG_DIR, "umap_healthy_kmt2a_clec2a_feat.png"), plot = last_plot(), width = 8, height = 6, device = "png")
+r <-DimPlot(tumor, group.by = 'USI')
+r + scale_x_continuous(breaks = seq(-15, 15, by = 5),limits = c(-15, 15)) +
+  scale_y_continuous(breaks = seq(-15, 15, by = 5),limits = c(-15, 15))
+ggsave(file.path(FIG_DIR, "umap_tumor_kmt2a_by_USI.png"), plot = last_plot(), width = 8, height = 6, device = "png")
+s <-DimPlot(tumor, group.by = 'idents')
+s + scale_x_continuous(breaks = seq(-15, 15, by = 5),limits = c(-15, 15)) +
+  scale_y_continuous(breaks = seq(-15, 15, by = 5),limits = c(-15, 15))
+ggsave(file.path(FIG_DIR, "umap_tumor_kmt2a_clec2a_by_patient.png"), plot = last_plot(), width = 8, height = 6, device = "png")
+t <-FeaturePlot_scCustom(tumor, features = "CLEC2A")
+t + scale_x_continuous(breaks = seq(-15, 15, by = 5),limits = c(-15, 15)) +
+  scale_y_continuous(breaks = seq(-15, 15, by = 5),limits = c(-15, 15))
+ggsave(file.path(FIG_DIR, "umap_tumor_kmt2a_clec2a_feat.png"), plot = last_plot(), width = 8, height = 6, device = "png")
+```
+
+#save objects
+```{r}
+qs_save(healthy, file.path(CDS_DIR, "sander_kmt2a_healthy.qs2"))
+qs_save(kmt2a, file.path(CDS_DIR, "sander_kmt2a.qs2"))
+qs_save(tumor, file.path(CDS_DIR, "sander_kmt2a_tumor.qs2"))
+```
